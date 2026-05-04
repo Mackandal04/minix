@@ -96,8 +96,13 @@ int do_noquantum(message *m_ptr)
 	}
 
 	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q) {
-		rmp->priority += 1; /* lower priority */
+
+	rmp->quantum_counter++;
+	if (rmp->quantum_counter >= CPU_PENALTY_WINDOW_QUANTA) {
+		if (rmp->priority < MIN_USER_Q) {
+			rmp->priority += 1;
+		}
+		rmp->quantum_counter = 0;
 	}
 
 	if ((rv = schedule_process_local(rmp)) != OK) {
@@ -129,7 +134,10 @@ int do_stop_scheduling(message *m_ptr)
 #ifdef CONFIG_SMP
 	cpu_proc[rmp->cpu]--;
 #endif
-	rmp->flags = 0; /*&= ~IN_USE;*/
+	rmp->flags = 0;
+
+	rmp->quantum_counter = 0;
+	rmp->last_window_quanta = 0;
 
 	return OK;
 }
@@ -221,6 +229,9 @@ int do_start_scheduling(message *m_ptr)
 		return rv;
 	}
 	rmp->flags = IN_USE;
+
+	rmp->quantum_counter = 0;
+	rmp->last_window_quanta = 0;
 
 	/* Schedule the process, giving it some quantum */
 	pick_cpu(rmp);
@@ -357,13 +368,15 @@ void balance_queues(void)
 
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
 		if (rmp->flags & IN_USE) {
-			if (rmp->priority > rmp->max_priority) {
-				rmp->priority -= 1; /* increase priority */
+			if (rmp->last_window_quanta == 0 &&
+				rmp->priority > rmp->max_priority) {
+				rmp->priority -= 1;
 				schedule_process_local(rmp);
 			}
+			rmp->last_window_quanta = rmp->quantum_counter;
+			rmp->quantum_counter = 0;
 		}
 	}
-
 	if ((r = sys_setalarm(balance_timeout, 0)) != OK)
 		panic("sys_setalarm failed: %d", r);
 }
